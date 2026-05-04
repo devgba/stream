@@ -5,16 +5,13 @@
 
 import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { 
-  Camera, 
   Settings, 
   Activity, 
   Radio, 
-  Wifi, 
   WifiOff, 
   AlertCircle,
   Play,
   Square,
-  ChevronDown,
   RefreshCw,
   Video,
   SwitchCamera
@@ -35,58 +32,52 @@ const STUN_SERVERS = [
   { urls: 'stun:stun2.l.google.com:19302' },
 ];
 
-/**
- * Strict SDP Munging to FORCE H264 only.
- * Removes VP8, VP9 and other codecs to prevent Cloudflare decoding issues.
- */
-function preferH264(sdp: string) {
-  const lines = sdp.split('\r\n');
-  let videoMlineIndex = -1;
+function preferCloudflareVideoCodecs(transceiver: RTCRtpTransceiver) {
+  if (!RTCRtpSender.getCapabilities || !transceiver.setCodecPreferences) return;
 
-  for (let i = 0; i < lines.length; i++) {
-    if (lines[i].indexOf('m=video') === 0) {
-      videoMlineIndex = i;
-      break;
-    }
-  }
+  const capabilities = RTCRtpSender.getCapabilities('video');
+  if (!capabilities) return;
 
-  if (videoMlineIndex === -1) return sdp;
+  const codecs = capabilities.codecs;
+  type CodecCapability = (typeof codecs)[number];
+  const isH264 = (codec: CodecCapability) => codec.mimeType.toLowerCase() === 'video/h264';
+  const isBaselineH264 = (codec: CodecCapability) =>
+    isH264(codec) && /profile-level-id=42e01f/i.test(codec.sdpFmtpLine || '');
+  const isVp8OrVp9 = (codec: CodecCapability) =>
+    codec.mimeType.toLowerCase() === 'video/vp8' || codec.mimeType.toLowerCase() === 'video/vp9';
 
-  // 1. Identify H.264 payload types
-  const h264Payloads: string[] = [];
-  for (let i = videoMlineIndex; i < lines.length; i++) {
-    if (lines[i].indexOf('a=rtpmap:') === 0 && lines[i].indexOf('H264/90000') !== -1) {
-      const match = lines[i].match(/a=rtpmap:(\d+)/);
-      if (match) h264Payloads.push(match[1]);
-    }
-  }
+  const preferred = [
+    ...codecs.filter(isBaselineH264),
+    ...codecs.filter(codec => isH264(codec) && !isBaselineH264(codec)),
+    ...codecs.filter(isVp8OrVp9),
+    ...codecs.filter(codec => !isH264(codec) && !isVp8OrVp9(codec)),
+  ];
 
-  if (h264Payloads.length === 0) return sdp;
+  transceiver.setCodecPreferences(preferred);
+}
 
-  // 2. Reconstruct the m=video line to ONLY include H.264 payloads
-  const mlineParts = lines[videoMlineIndex].split(' ');
-  const header = mlineParts.slice(0, 3); // "m=video", port, proto
-  lines[videoMlineIndex] = [...header, ...h264Payloads].join(' ');
-
-  // 3. Remove non-H264 rtpmap/fmtp/rtcp-fb lines to be clean
-  const filteredLines = lines.filter((line, idx) => {
-    // Keep everything before video m-line or non-video related
-    if (idx <= videoMlineIndex) return true;
-    if (line.indexOf('m=') === 0) return true; // Stop filtering at next m-line (audio)
-
-    // If it's a codec-related line, check if it's for H.264
-    const isCodecLine = line.indexOf('a=rtpmap:') === 0 || 
-                        line.indexOf('a=fmtp:') === 0 || 
-                        line.indexOf('a=rtcp-fb:') === 0;
-    
-    if (isCodecLine) {
-      return h264Payloads.some(pt => line.indexOf(':' + pt + ' ') !== -1 || line.indexOf(':' + pt + '\r') !== -1 || line.endsWith(':' + pt));
+function waitForIceGatheringComplete(pc: RTCPeerConnection) {
+  return new Promise<void>((resolve, reject) => {
+    if (pc.iceGatheringState === 'complete') {
+      resolve();
+      return;
     }
 
-    return true;
+    const timer = window.setTimeout(() => {
+      pc.removeEventListener('icegatheringstatechange', check);
+      reject(new Error('ICE gathering timeout. Coba lagi dengan koneksi seluler/Wi-Fi yang lebih stabil.'));
+    }, 15000);
+
+    const check = () => {
+      if (pc.iceGatheringState === 'complete') {
+        window.clearTimeout(timer);
+        pc.removeEventListener('icegatheringstatechange', check);
+        resolve();
+      }
+    };
+
+    pc.addEventListener('icegatheringstatechange', check);
   });
-
-  return filteredLines.join('\r\n');
 }
 
 // --- App Component ---
@@ -204,13 +195,19 @@ export default function App() {
   };
 
   const startStreaming = async (mode = facingMode) => {
-    if (!streamUrl) {
+    const whipUrl = streamUrl.trim();
+    if (!whipUrl) {
       setError('Masukkan URL WebRTC (WHIP) dari Cloudflare');
       return;
     }
 
     setError(null);
     try {
+      if (localStreamRef.current) {
+        localStreamRef.current.getTracks().forEach(track => track.stop());
+        localStreamRef.current = null;
+      }
+
       // 1. Get User Media - Locked to 360p
       const stream = await navigator.mediaDevices.getUserMedia({
         video: {
@@ -233,37 +230,40 @@ export default function App() {
       pcRef.current = pc;
 
       // 3. Add tracks
-      stream.getTracks().forEach(track => pc.addTrack(track, stream));
+      stream.getAudioTracks().forEach(track => pc.addTrack(track, stream));
+      const videoTrack = stream.getVideoTracks()[0];
+      if (!videoTrack) {
+        throw new Error('Kamera tidak mengirim video track. Periksa izin kamera Android.');
+      }
 
-      // 4. Create Offer & Force H.264
+      const videoTransceiver = pc.addTransceiver(videoTrack, {
+        direction: 'sendonly',
+        streams: [stream],
+      });
+      preferCloudflareVideoCodecs(videoTransceiver);
+
+      const videoSender = videoTransceiver.sender;
+      const params = videoSender.getParameters();
+      if (!params.encodings) params.encodings = [{}];
+      params.encodings[0].maxBitrate = bitrateLimit * 1000;
+      // @ts-ignore - Some browsers support this before it appears in TS DOM types.
+      params.degradationPreference = 'maintain-framerate';
+      try {
+        await videoSender.setParameters(params);
+      } catch (err) {
+        console.warn('Unable to apply video sender parameters', err);
+      }
+
+      // 4. Create Offer
       const offer = await pc.createOffer();
-      
-      // SDP Munging: Put H.264 at the top of the codec list
-      const h264Offer = {
-        type: offer.type,
-        sdp: preferH264(offer.sdp || '')
-      };
-      
-      await pc.setLocalDescription(h264Offer);
+
+      await pc.setLocalDescription(offer);
 
       // 5. Wait for ICE gathering (WHIP requirement)
-      await new Promise<void>((resolve) => {
-        if (pc.iceGatheringState === 'complete') resolve();
-        else {
-          const timer = setTimeout(() => resolve(), 3000); // Max wait 3s
-          const check = () => {
-            if (pc.iceGatheringState === 'complete') {
-              pc.removeEventListener('icegatheringstatechange', check);
-              clearTimeout(timer);
-              resolve();
-            }
-          };
-          pc.addEventListener('icegatheringstatechange', check);
-        }
-      });
+      await waitForIceGatheringComplete(pc);
 
       // 6. POST to WHIP endpoint
-      const response = await fetch(streamUrl, {
+      const response = await fetch(whipUrl, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/sdp',
@@ -278,18 +278,6 @@ export default function App() {
 
       const answerSdp = await response.text();
       await pc.setRemoteDescription({ type: 'answer', sdp: answerSdp });
-
-      // 7. Apply Bitrate Limit & Preferences
-      const senders = pc.getSenders();
-      const videoSender = senders.find(s => s.track?.kind === 'video');
-      if (videoSender) {
-        const params = videoSender.getParameters();
-        if (!params.encodings) params.encodings = [{}];
-        params.encodings[0].maxBitrate = bitrateLimit * 1000;
-        // @ts-ignore - Some browsers might need this
-        params.degradationPreference = 'maintain-framerate';
-        await videoSender.setParameters(params);
-      }
 
       setIsStreaming(true);
       statsIntervalRef.current = window.setInterval(updateStats, 1000);
@@ -483,7 +471,7 @@ export default function App() {
                     </div>
                     <div>
                       <p className="text-[10px] font-bold uppercase text-orange-400">Fixed Resolution</p>
-                      <p className="text-[11px] font-mono text-white/40 tracking-tight text-white/60">360p @ 30fps | H.264 High Profile</p>
+                      <p className="text-[11px] font-mono text-white/40 tracking-tight text-white/60">360p @ 30fps | Cloudflare-compatible codecs</p>
                     </div>
                  </div>
               </div>
@@ -523,4 +511,3 @@ export default function App() {
     </div>
   );
 }
-
