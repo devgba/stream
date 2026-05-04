@@ -1,0 +1,6 @@
+{
+  "name": "LiveStream WHIP 360",
+  "description": "Mobile-optimized WebRTC Live Streaming application using WHIP protocol with real-time network monitoring and bitrate control.",
+  "requestFramePermissions": ["camera", "microphone"],
+  "majorCapabilities": []
+}
