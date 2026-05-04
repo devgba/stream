@@ -35,6 +35,60 @@ const STUN_SERVERS = [
   { urls: 'stun:stun2.l.google.com:19302' },
 ];
 
+/**
+ * Strict SDP Munging to FORCE H264 only.
+ * Removes VP8, VP9 and other codecs to prevent Cloudflare decoding issues.
+ */
+function preferH264(sdp: string) {
+  const lines = sdp.split('\r\n');
+  let videoMlineIndex = -1;
+
+  for (let i = 0; i < lines.length; i++) {
+    if (lines[i].indexOf('m=video') === 0) {
+      videoMlineIndex = i;
+      break;
+    }
+  }
+
+  if (videoMlineIndex === -1) return sdp;
+
+  // 1. Identify H.264 payload types
+  const h264Payloads: string[] = [];
+  for (let i = videoMlineIndex; i < lines.length; i++) {
+    if (lines[i].indexOf('a=rtpmap:') === 0 && lines[i].indexOf('H264/90000') !== -1) {
+      const match = lines[i].match(/a=rtpmap:(\d+)/);
+      if (match) h264Payloads.push(match[1]);
+    }
+  }
+
+  if (h264Payloads.length === 0) return sdp;
+
+  // 2. Reconstruct the m=video line to ONLY include H.264 payloads
+  const mlineParts = lines[videoMlineIndex].split(' ');
+  const header = mlineParts.slice(0, 3); // "m=video", port, proto
+  lines[videoMlineIndex] = [...header, ...h264Payloads].join(' ');
+
+  // 3. Remove non-H264 rtpmap/fmtp/rtcp-fb lines to be clean
+  const filteredLines = lines.filter((line, idx) => {
+    // Keep everything before video m-line or non-video related
+    if (idx <= videoMlineIndex) return true;
+    if (line.indexOf('m=') === 0) return true; // Stop filtering at next m-line (audio)
+
+    // If it's a codec-related line, check if it's for H.264
+    const isCodecLine = line.indexOf('a=rtpmap:') === 0 || 
+                        line.indexOf('a=fmtp:') === 0 || 
+                        line.indexOf('a=rtcp-fb:') === 0;
+    
+    if (isCodecLine) {
+      return h264Payloads.some(pt => line.indexOf(':' + pt + ' ') !== -1 || line.indexOf(':' + pt + '\r') !== -1 || line.endsWith(':' + pt));
+    }
+
+    return true;
+  });
+
+  return filteredLines.join('\r\n');
+}
+
 // --- App Component ---
 export default function App() {
   const [streamUrl, setStreamUrl] = useState('');
@@ -181,10 +235,16 @@ export default function App() {
       // 3. Add tracks
       stream.getTracks().forEach(track => pc.addTrack(track, stream));
 
-      // 4. Create Offer & Prefer H.264 for Cloudflare
+      // 4. Create Offer & Force H.264
       const offer = await pc.createOffer();
       
-      await pc.setLocalDescription(offer);
+      // SDP Munging: Put H.264 at the top of the codec list
+      const h264Offer = {
+        type: offer.type,
+        sdp: preferH264(offer.sdp || '')
+      };
+      
+      await pc.setLocalDescription(h264Offer);
 
       // 5. Wait for ICE gathering (WHIP requirement)
       await new Promise<void>((resolve) => {
@@ -219,13 +279,15 @@ export default function App() {
       const answerSdp = await response.text();
       await pc.setRemoteDescription({ type: 'answer', sdp: answerSdp });
 
-      // 7. Apply Bitrate Limit
+      // 7. Apply Bitrate Limit & Preferences
       const senders = pc.getSenders();
       const videoSender = senders.find(s => s.track?.kind === 'video');
       if (videoSender) {
         const params = videoSender.getParameters();
         if (!params.encodings) params.encodings = [{}];
         params.encodings[0].maxBitrate = bitrateLimit * 1000;
+        // @ts-ignore - Some browsers might need this
+        params.degradationPreference = 'maintain-framerate';
         await videoSender.setParameters(params);
       }
 
