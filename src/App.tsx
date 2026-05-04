@@ -16,23 +16,24 @@ import {
   Square,
   ChevronDown,
   RefreshCw,
-  Video
+  Video,
+  SwitchCamera
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 
 // --- Constants & Types ---
-const RESOLUTION_CONSTRAINTS = {
-  width: { ideal: 640 },
-  height: { ideal: 360 },
-  frameRate: { ideal: 30 }
-};
-
 interface NetworkStats {
   bitrate: number; // in kbps
   packetLoss: number;
   latency: number;
   fps: number;
 }
+
+const STUN_SERVERS = [
+  { urls: 'stun:stun.l.google.com:19302' },
+  { urls: 'stun:stun1.l.google.com:19302' },
+  { urls: 'stun:stun2.l.google.com:19302' },
+];
 
 // --- App Component ---
 export default function App() {
@@ -43,6 +44,7 @@ export default function App() {
   const [isHealthy, setIsHealthy] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [showSettings, setShowSettings] = useState(false);
+  const [facingMode, setFacingMode] = useState<'user' | 'environment'>('environment'); // Default ke belakang
   
   const videoRef = useRef<HTMLVideoElement>(null);
   const pcRef = useRef<RTCPeerConnection | null>(null);
@@ -68,34 +70,34 @@ export default function App() {
       });
 
       if (outboundRtp) {
-        // Calculate bitrate
         const now = performance.now();
         const bytesSent = outboundRtp.bytesSent;
         const framesEncoded = outboundRtp.framesEncoded;
         
-        // Simple delta calculation (this would be better with stored previous values)
-        // For simplicity, we just show current total and state
-        const lastBytes = (pcRef.current as any)._lastBytes || 0;
+        const lastBytes = (pcRef.current as any)._lastBytes || bytesSent;
+        const lastFrames = (pcRef.current as any)._lastFrames || framesEncoded;
         const lastTime = (pcRef.current as any)._lastTime || now;
         
-        const bitrate = ((bytesSent - lastBytes) * 8) / (now - lastTime); // kbps
-        const fps = (framesEncoded - ((pcRef.current as any)._lastFrames || 0)) / ((now - lastTime) / 1000);
+        const duration = (now - lastTime) / 1000; // seconds
+        if (duration > 0) {
+          const bitrate = ((bytesSent - lastBytes) * 8) / (duration * 1000); // kbps
+          const fps = (framesEncoded - lastFrames) / duration;
 
-        setStats(prev => ({
-          ...prev,
-          bitrate: Math.round(bitrate),
-          fps: Math.round(fps),
-          packetLoss: outboundRtp.packetsLost || 0,
-          latency: candidatePair ? Math.round(candidatePair.currentRoundTripTime * 1000) : 0
-        }));
+          setStats(prev => ({
+            ...prev,
+            bitrate: Math.round(bitrate),
+            fps: Math.round(fps),
+            packetLoss: outboundRtp.packetsLost || 0,
+            latency: candidatePair ? Math.round(candidatePair.currentRoundTripTime * 1000) : 0
+          }));
+
+          // Health Check - Jika bitrate 0 tapi streaming jalan, tandai tidak sehat
+          setIsHealthy(bitrate > 100);
+        }
 
         (pcRef.current as any)._lastBytes = bytesSent;
         (pcRef.current as any)._lastFrames = framesEncoded;
         (pcRef.current as any)._lastTime = now;
-
-        // Health Check
-        const healthy = bitrate > 200 && (outboundRtp.packetsLost / outboundRtp.packetsSent < 0.1);
-        setIsHealthy(healthy);
       }
     } catch (err) {
       console.error('Failed to get stats', err);
@@ -104,7 +106,10 @@ export default function App() {
 
   // --- WebRTC Logic ---
   const stopStreaming = useCallback(() => {
-    if (statsIntervalRef.current) clearInterval(statsIntervalRef.current);
+    if (statsIntervalRef.current) {
+      clearInterval(statsIntervalRef.current);
+      statsIntervalRef.current = null;
+    }
     if (pcRef.current) {
       pcRef.current.close();
       pcRef.current = null;
@@ -115,11 +120,38 @@ export default function App() {
     }
     setIsStreaming(false);
     setIsHealthy(true);
+    setStats({ bitrate: 0, packetLoss: 0, latency: 0, fps: 0 });
   }, []);
 
-  const startStreaming = async () => {
+  const toggleCamera = async () => {
+    const newMode = facingMode === 'user' ? 'environment' : 'user';
+    setFacingMode(newMode);
+    
+    if (isStreaming) {
+      // Re-initialize stream if already streaming
+      stopStreaming();
+      setTimeout(() => startStreaming(newMode), 500);
+    } else {
+      // Just update preview
+      try {
+        if (localStreamRef.current) {
+          localStreamRef.current.getTracks().forEach(t => t.stop());
+        }
+        const stream = await navigator.mediaDevices.getUserMedia({
+          video: { facingMode: newMode, width: 640, height: 360 },
+          audio: true
+        });
+        localStreamRef.current = stream;
+        if (videoRef.current) videoRef.current.srcObject = stream;
+      } catch (e) {
+        console.error("Gagal ganti kamera preview", e);
+      }
+    }
+  };
+
+  const startStreaming = async (mode = facingMode) => {
     if (!streamUrl) {
-      setError('Please input a WebRTC (WHIP) URL');
+      setError('Masukkan URL WebRTC (WHIP) dari Cloudflare');
       return;
     }
 
@@ -127,33 +159,42 @@ export default function App() {
     try {
       // 1. Get User Media - Locked to 360p
       const stream = await navigator.mediaDevices.getUserMedia({
-        video: RESOLUTION_CONSTRAINTS,
+        video: {
+          facingMode: mode,
+          width: { ideal: 640 },
+          height: { ideal: 360 },
+          frameRate: { ideal: 30 }
+        },
         audio: true
       });
       
       localStreamRef.current = stream;
       if (videoRef.current) videoRef.current.srcObject = stream;
 
-      // 2. Setup PeerConnection
+      // 2. Setup PeerConnection dengan STUN yang lebih kuat
       const pc = new RTCPeerConnection({
-        iceServers: [{ urls: 'stun:stun.l.google.com:19302' }]
+        iceServers: STUN_SERVERS,
+        iceCandidatePoolSize: 10
       });
       pcRef.current = pc;
 
       // 3. Add tracks
       stream.getTracks().forEach(track => pc.addTrack(track, stream));
 
-      // 4. Create Offer
+      // 4. Create Offer & Prefer H.264 for Cloudflare
       const offer = await pc.createOffer();
+      
       await pc.setLocalDescription(offer);
 
-      // 5. Wait for ICE gathering complete (WHIP requirement)
+      // 5. Wait for ICE gathering (WHIP requirement)
       await new Promise<void>((resolve) => {
         if (pc.iceGatheringState === 'complete') resolve();
         else {
+          const timer = setTimeout(() => resolve(), 3000); // Max wait 3s
           const check = () => {
             if (pc.iceGatheringState === 'complete') {
               pc.removeEventListener('icegatheringstatechange', check);
+              clearTimeout(timer);
               resolve();
             }
           };
@@ -171,7 +212,8 @@ export default function App() {
       });
 
       if (!response.ok) {
-        throw new Error(`WHIP server returned ${response.status}: ${await response.text()}`);
+        const errText = await response.text();
+        throw new Error(`Cloudflare Error (${response.status}): ${errText}`);
       }
 
       const answerSdp = await response.text();
@@ -191,97 +233,120 @@ export default function App() {
       statsIntervalRef.current = window.setInterval(updateStats, 1000);
 
     } catch (err: any) {
-      setError(err.message || 'Failed to start stream');
+      setError(err.message || 'Gagal memulai streaming');
       stopStreaming();
     }
   };
 
   useEffect(() => {
+    // Initial preview setup
+    const setupPreview = async () => {
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({
+          video: { facingMode: 'environment', width: 640, height: 360 },
+          audio: true
+        });
+        localStreamRef.current = stream;
+        if (videoRef.current) videoRef.current.srcObject = stream;
+      } catch (e) {
+        console.warn("Kamera tidak ditemukan atau ditolak", e);
+      }
+    };
+    setupPreview();
     return () => stopStreaming();
   }, [stopStreaming]);
 
   return (
     <div className="min-h-screen bg-[#151619] text-white font-sans selection:bg-orange-500/30 overflow-hidden flex flex-col">
-      {/* --- UI Header / Status Bar --- */}
-      <header className="p-4 border-b border-white/5 flex items-center justify-between bg-[#1a1b1e]">
+      {/* --- UI Header --- */}
+      <header className="p-4 border-b border-white/5 flex items-center justify-between bg-[#1a1b1e] z-20">
         <div className="flex items-center gap-2">
-          <div className={`w-2 h-2 rounded-full ${isStreaming ? (isHealthy ? 'bg-red-500 animate-pulse' : 'bg-orange-500') : 'bg-white/20'}`} />
-          <h1 className="text-xs font-mono uppercase tracking-widest font-bold text-white/70">
-            {isStreaming ? 'Live Broadcast' : 'System Ready'}
+          <div className={`w-2.5 h-2.5 rounded-full ${isStreaming ? (isHealthy ? 'bg-red-500 animate-pulse' : 'bg-orange-500 animate-bounce') : 'bg-white/20'}`} />
+          <h1 className="text-[10px] font-mono uppercase tracking-[0.2em] font-bold text-white/50">
+            {isStreaming ? (isHealthy ? 'Live Broadcast' : 'Connection Unstable') : 'System Idle'}
           </h1>
         </div>
         
-        <div className="flex gap-4">
-          <AnimatePresence>
-            {!isHealthy && isStreaming && (
-              <motion.div 
-                initial={{ opacity: 0, x: 20 }}
-                animate={{ opacity: 1, x: 0 }}
-                exit={{ opacity: 0, x: 20 }}
-                className="bg-orange-950/50 border border-orange-500/50 px-2 py-1 rounded flex items-center gap-2"
-              >
-                <AlertCircle size={14} className="text-orange-500" />
-                <span className="text-[10px] uppercase font-bold text-orange-200">Poor Connection</span>
-              </motion.div>
-            )}
-          </AnimatePresence>
-          
+        <div className="flex gap-2">
+          <button 
+            onClick={toggleCamera}
+            className="p-2.5 bg-white/5 hover:bg-white/10 rounded-xl transition-all active:scale-90"
+            title="Switch Camera"
+          >
+            <SwitchCamera size={18} className="text-white/70" />
+          </button>
           <button 
             onClick={() => setShowSettings(!showSettings)}
-            className="p-2 hover:bg-white/5 rounded-full transition-colors"
+            className="p-2.5 bg-white/5 hover:bg-white/10 rounded-xl transition-all"
           >
-            <Settings size={20} className={showSettings ? 'text-orange-500' : 'text-white/40'} />
+            <Settings size={18} className={showSettings ? 'text-orange-500' : 'text-white/40'} />
           </button>
         </div>
       </header>
 
-      {/* --- Viewport Container --- */}
+      {/* --- Viewport --- */}
       <main className="flex-1 relative bg-black flex items-center justify-center overflow-hidden">
         <video 
           ref={videoRef}
           autoPlay 
           playsInline 
           muted 
-          className="w-full h-full object-cover grayscale-[0.2]"
+          className="w-full h-full object-cover"
           id="preview-video"
         />
 
-        {/* --- Stats Overlay (Floating) --- */}
+        {/* --- Network Alert --- */}
+        <AnimatePresence>
+          {!isHealthy && isStreaming && (
+            <motion.div 
+               initial={{ opacity: 0, scale: 0.9 }}
+               animate={{ opacity: 1, scale: 1 }}
+               exit={{ opacity: 0 }}
+               className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 bg-black/80 backdrop-blur-xl border border-orange-500/50 p-6 rounded-3xl flex flex-col items-center gap-3 z-30 pointer-events-none"
+            >
+              <WifiOff size={32} className="text-orange-500" />
+              <p className="text-sm font-bold uppercase tracking-widest text-orange-200">Poor Connection</p>
+              <p className="text-[10px] text-white/40 text-center max-w-[200px]">Check your 4G signal. Video may be lagging or frozen at 0 kbps.</p>
+            </motion.div>
+          )}
+        </AnimatePresence>
+
+        {/* --- Stats HUD --- */}
         <AnimatePresence>
           {isStreaming && (
             <motion.div 
-              initial={{ opacity: 0, y: 10 }}
-              animate={{ opacity: 1, y: 0 }}
-              className="absolute top-4 left-4 z-10 space-y-1"
+              initial={{ opacity: 0, x: -20 }}
+              animate={{ opacity: 1, x: 0 }}
+              className="absolute top-4 left-4 z-10"
             >
-              <div className="bg-black/60 backdrop-blur-md border border-white/10 p-3 rounded-xl flex flex-col gap-2 min-w-[140px]">
-                <div className="flex items-center justify-between gap-4">
-                  <div className="flex items-center gap-1.5 opacity-60">
-                    <Radio size={12} />
-                    <span className="text-[10px] font-mono uppercase tracking-tighter">Bitrate</span>
+              <div className="bg-black/40 backdrop-blur-md border border-white/10 p-3 rounded-2xl flex flex-col gap-2.5 min-w-[150px]">
+                <div className="flex items-center justify-between gap-6">
+                  <div className="flex items-center gap-2 opacity-50">
+                    <Radio size={12} className="text-blue-400" />
+                    <span className="text-[10px] font-mono uppercase">Bitrate</span>
                   </div>
-                  <span className={`text-xs font-mono font-bold ${stats.bitrate < 300 ? 'text-orange-500' : 'text-white'}`}>
-                    {stats.bitrate} <span className="opacity-40 font-normal">kbps</span>
+                  <span className={`text-xs font-mono font-bold ${stats.bitrate < 100 ? 'text-red-500 animate-pulse' : 'text-green-400'}`}>
+                    {stats.bitrate} <span className="text-[8px] opacity-40">kbps</span>
                   </span>
                 </div>
 
-                <div className="flex items-center justify-between gap-4">
-                  <div className="flex items-center gap-1.5 opacity-60">
+                <div className="flex items-center justify-between gap-6">
+                  <div className="flex items-center gap-2 opacity-50">
                     <Video size={12} />
-                    <span className="text-[10px] font-mono uppercase tracking-tighter">FPS</span>
+                    <span className="text-[10px] font-mono uppercase">FPS</span>
                   </div>
                   <span className="text-xs font-mono font-bold">
                     {stats.fps}
                   </span>
                 </div>
 
-                <div className="flex items-center justify-between gap-4">
-                  <div className="flex items-center gap-1.5 opacity-60">
-                    <Activity size={12} />
-                    <span className="text-[10px] font-mono uppercase tracking-tighter">Latency</span>
+                <div className="flex items-center justify-between gap-6">
+                  <div className="flex items-center gap-2 opacity-50">
+                    <Activity size={12} className="text-purple-400" />
+                    <span className="text-[10px] font-mono uppercase">RTT</span>
                   </div>
-                  <span className="text-xs font-mono font-bold">
-                    {stats.latency}<span className="opacity-40 font-normal">ms</span>
+                  <span className="text-xs font-mono font-bold text-white/80">
+                    {stats.latency}<span className="text-[8px] opacity-20">ms</span>
                   </span>
                 </div>
               </div>
@@ -289,35 +354,28 @@ export default function App() {
           )}
         </AnimatePresence>
 
-        {/* --- No Signal Placeholder --- */}
-        {!isStreaming && !videoRef.current?.srcObject && (
-          <div className="absolute inset-0 flex flex-col items-center justify-center bg-[#0d0e10]">
-             <div className="w-16 h-16 border border-white/5 rounded-full flex items-center justify-center text-white/10 mb-4">
-                <Camera size={32} />
-             </div>
-             <p className="text-white/20 font-mono text-[10px] uppercase tracking-widest">No Active Input</p>
-          </div>
-        )}
-
-        {/* --- Error Toast --- */}
+        {/* --- Error Overlay --- */}
         <AnimatePresence>
           {error && (
             <motion.div 
               initial={{ opacity: 0, y: 20 }}
               animate={{ opacity: 1, y: 0 }}
               exit={{ opacity: 0, y: 20 }}
-              className="absolute bottom-24 left-4 right-4 bg-red-500 text-white p-4 rounded-xl flex items-center gap-3 shadow-2xl z-50"
+              className="absolute bottom-28 left-4 right-4 bg-red-600 p-4 rounded-2xl flex flex-col gap-2 shadow-2xl z-50 border border-white/20"
             >
-              <AlertCircle size={20} />
-              <p className="text-sm font-medium">{error}</p>
-              <button onClick={() => setError(null)} className="ml-auto opacity-70 hover:opacity-100 uppercase text-[10px] font-bold">Dismiss</button>
+              <div className="flex items-center gap-3">
+                <AlertCircle size={20} />
+                <p className="text-sm font-bold uppercase tracking-tight">Broadcast Failed</p>
+              </div>
+              <p className="text-xs opacity-80 leading-relaxed font-mono">{error}</p>
+              <button onClick={() => setError(null)} className="mt-2 w-full py-2 bg-black/20 rounded-lg text-[10px] uppercase font-bold hover:bg-black/30">Tutup Notifikasi</button>
             </motion.div>
           )}
         </AnimatePresence>
       </main>
 
-      {/* --- Control Panel (BottomSheet feel) --- */}
-      <footer className="bg-[#1a1b1e] p-6 pb-10 border-t border-white/5 space-y-6">
+      {/* --- Footer Controls --- */}
+      <footer className="bg-[#1a1b1e] p-6 pb-10 border-t border-white/5 space-y-6 z-20">
         
         <AnimatePresence>
           {showSettings && (
@@ -325,54 +383,45 @@ export default function App() {
               initial={{ height: 0, opacity: 0 }}
               animate={{ height: 'auto', opacity: 1 }}
               exit={{ height: 0, opacity: 0 }}
-              className="overflow-hidden space-y-4"
+              className="overflow-hidden space-y-5"
             >
               <div className="space-y-4">
                  <div className="space-y-2">
-                   <label className="text-[10px] font-mono uppercase text-white/40 tracking-wider">WHIP Endpoint URL</label>
-                   <div className="relative">
-                     <input 
-                       id="stream-url-input"
-                       type="text" 
-                       value={streamUrl}
-                       onChange={(e) => setStreamUrl(e.target.value)}
-                       placeholder="https://customer-xxx.cloudflarestream.com/webRTC/..."
-                       className="w-full bg-black/40 border border-white/10 p-3 rounded-xl text-sm font-mono placeholder:text-white/10 focus:border-orange-500/50 outline-none transition-all pr-12"
-                     />
-                     <div className="absolute right-3 top-1/2 -translate-y-1/2 text-white/20">
-                        <ChevronDown size={16} />
-                     </div>
-                   </div>
-                 </div>
-
-                 <div className="space-y-3">
-                   <div className="flex justify-between items-end">
-                      <label className="text-[10px] font-mono uppercase text-white/40 tracking-wider">Target Bitrate</label>
-                      <span className="text-xs font-mono font-bold text-orange-500">{bitrateLimit} KBPS</span>
-                   </div>
+                   <label className="text-[10px] font-mono uppercase text-white/30 tracking-widest pl-1">WHIP Publish URL</label>
                    <input 
-                     id="bitrate-slider"
-                     type="range" 
-                     min="100" 
-                     max="4000" 
-                     step="100"
-                     value={bitrateLimit}
-                     onChange={(e) => setBitrateLimit(parseInt(e.target.value))}
-                     className="w-full accent-orange-500 bg-white/10 h-1.5 rounded-lg appearance-none cursor-pointer"
+                     type="text" 
+                     value={streamUrl}
+                     onChange={(e) => setStreamUrl(e.target.value)}
+                     placeholder="https://.../webRTC/publish"
+                     className="w-full bg-black/60 border border-white/5 p-4 rounded-2xl text-sm font-mono placeholder:text-white/10 focus:border-orange-500/40 outline-none transition-all shadow-inner"
                    />
-                   <div className="flex justify-between text-[8px] font-mono text-white/20 uppercase tracking-tighter">
-                      <span>Low Bandwidth</span>
-                      <span>High Quality</span>
+                 </div>
+
+                 <div className="space-y-4">
+                   <div className="flex justify-between items-center px-1">
+                      <label className="text-[10px] font-mono uppercase text-white/30 tracking-widest">Max Bitrate</label>
+                      <span className="text-sm font-mono font-bold text-orange-500">{bitrateLimit} <span className="text-[10px] opacity-40">kbps</span></span>
+                   </div>
+                   <div className="px-1">
+                    <input 
+                      type="range" 
+                      min="300" 
+                      max="5000" 
+                      step="100"
+                      value={bitrateLimit}
+                      onChange={(e) => setBitrateLimit(parseInt(e.target.value))}
+                      className="w-full accent-orange-500 bg-white/5 h-2 rounded-full appearance-none cursor-pointer"
+                    />
                    </div>
                  </div>
 
-                 <div className="flex items-center gap-4 bg-white/5 p-3 rounded-xl border border-white/5">
-                    <div className="p-2 bg-black/40 rounded-lg text-white/40">
-                      <Video size={16} />
+                 <div className="flex items-center gap-4 bg-orange-500/5 p-4 rounded-2xl border border-orange-500/10">
+                    <div className="w-10 h-10 bg-orange-500/10 rounded-xl flex items-center justify-center text-orange-500">
+                      <Video size={18} />
                     </div>
                     <div>
-                      <p className="text-[10px] font-bold uppercase text-white/70">Resolution Locked</p>
-                      <p className="text-[10px] font-mono text-white/30">360p (640x360) @ 30 FPS</p>
+                      <p className="text-[10px] font-bold uppercase text-orange-400">Fixed Resolution</p>
+                      <p className="text-[11px] font-mono text-white/40 tracking-tight text-white/60">360p @ 30fps | H.264 High Profile</p>
                     </div>
                  </div>
               </div>
@@ -384,34 +433,32 @@ export default function App() {
         <div className="flex items-center gap-4">
           {!isStreaming ? (
             <button 
-              id="start-stream-btn"
-              onClick={startStreaming}
+              onClick={() => startStreaming()}
               disabled={!streamUrl}
-              className="flex-1 bg-orange-500 hover:bg-orange-600 disabled:bg-white/5 disabled:text-white/10 text-black font-bold h-14 rounded-2xl flex items-center justify-center gap-3 transition-all active:scale-95 group shadow-[0_0_20px_rgba(249,115,22,0.2)]"
+              className="flex-1 bg-orange-500 hover:bg-orange-600 disabled:bg-white/5 disabled:text-white/10 text-black font-black h-16 rounded-3xl flex items-center justify-center gap-4 transition-all active:scale-95 group shadow-2xl shadow-orange-500/20"
             >
-              <Play size={20} fill="currentColor" />
-              <span className="uppercase tracking-tight">Go Live</span>
+              <Play size={22} fill="currentColor" />
+              <span className="uppercase tracking-widest text-sm">Mulai Siaran</span>
             </button>
           ) : (
             <button 
-              id="stop-stream-btn"
               onClick={stopStreaming}
-              className="flex-1 bg-white text-black font-bold h-14 rounded-2xl flex items-center justify-center gap-3 transition-all active:scale-95 group shadow-xl"
+              className="flex-1 bg-white text-black font-black h-16 rounded-3xl flex items-center justify-center gap-4 transition-all active:scale-95 group shadow-2xl"
             >
-              <Square size={20} fill="currentColor" />
-              <span className="uppercase tracking-tight">Stop Stream</span>
+              <Square size={22} fill="currentColor" />
+              <span className="uppercase tracking-widest text-sm">Akhiri Sesi</span>
             </button>
           )}
 
           <button 
-             id="reset-btn"
              onClick={() => window.location.reload()}
-             className="w-14 h-14 border border-white/10 rounded-2xl flex items-center justify-center hover:bg-white/5 transition-colors group"
+             className="w-16 h-16 bg-white/5 border border-white/5 rounded-3xl flex items-center justify-center hover:bg-white/10 transition-all active:scale-90"
           >
-            <RefreshCw size={20} className="text-white/40 group-hover:rotate-45 transition-transform" />
+            <RefreshCw size={22} className="text-white/30" />
           </button>
         </div>
       </footer>
     </div>
   );
 }
+
