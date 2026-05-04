@@ -56,27 +56,45 @@ function preferCloudflareVideoCodecs(transceiver: RTCRtpTransceiver) {
   transceiver.setCodecPreferences(preferred);
 }
 
-function waitForIceGatheringComplete(pc: RTCPeerConnection) {
-  return new Promise<void>((resolve, reject) => {
+function waitForIceCandidates(pc: RTCPeerConnection) {
+  return new Promise<void>((resolve) => {
     if (pc.iceGatheringState === 'complete') {
       resolve();
       return;
     }
 
-    const timer = window.setTimeout(() => {
-      pc.removeEventListener('icegatheringstatechange', check);
-      reject(new Error('ICE gathering timeout. Coba lagi dengan koneksi seluler/Wi-Fi yang lebih stabil.'));
-    }, 15000);
+    let hasCandidate = (pc.localDescription?.sdp || '').includes('a=candidate:');
 
-    const check = () => {
+    const finish = () => {
+      window.clearTimeout(timer);
+      window.clearTimeout(candidateGraceTimer);
+      pc.removeEventListener('icecandidate', onCandidate);
+      pc.removeEventListener('icegatheringstatechange', onGatheringStateChange);
+      resolve();
+    };
+
+    const timer = window.setTimeout(() => {
+      console.warn('ICE gathering did not complete; publishing with available candidates.');
+      finish();
+    }, 8000);
+
+    const candidateGraceTimer = window.setTimeout(() => {
+      if (hasCandidate) finish();
+    }, 2500);
+
+    const onCandidate = (event: RTCPeerConnectionIceEvent) => {
+      if (event.candidate) hasCandidate = true;
+      if (!event.candidate || pc.iceGatheringState === 'complete') finish();
+    };
+
+    const onGatheringStateChange = () => {
       if (pc.iceGatheringState === 'complete') {
-        window.clearTimeout(timer);
-        pc.removeEventListener('icegatheringstatechange', check);
-        resolve();
+        finish();
       }
     };
 
-    pc.addEventListener('icegatheringstatechange', check);
+    pc.addEventListener('icecandidate', onCandidate);
+    pc.addEventListener('icegatheringstatechange', onGatheringStateChange);
   });
 }
 
@@ -259,8 +277,8 @@ export default function App() {
 
       await pc.setLocalDescription(offer);
 
-      // 5. Wait for ICE gathering (WHIP requirement)
-      await waitForIceGatheringComplete(pc);
+      // 5. Wait briefly for ICE candidates before sending the WHIP offer.
+      await waitForIceCandidates(pc);
 
       // 6. POST to WHIP endpoint
       const response = await fetch(whipUrl, {
