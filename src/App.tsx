@@ -506,7 +506,7 @@ export default function App() {
               className="flex-1 bg-orange-500 hover:bg-orange-600 disabled:bg-white/5 disabled:text-white/10 text-black font-black h-16 rounded-3xl flex items-center justify-center gap-4 transition-all active:scale-95 group shadow-2xl shadow-orange-500/20"
             >
               <Play size={22} fill="currentColor" />
-              <span className="uppercase tracking-widest text-sm">Mulai Siaran</span>
+              <span className="uppercase tracking-widest text-sm">Start Streaming</span>
             </button>
           ) : (
             <button 
@@ -514,7 +514,7 @@ export default function App() {
               className="flex-1 bg-white text-black font-black h-16 rounded-3xl flex items-center justify-center gap-4 transition-all active:scale-95 group shadow-2xl"
             >
               <Square size={22} fill="currentColor" />
-              <span className="uppercase tracking-widest text-sm">Akhiri Sesi</span>
+              <span className="uppercase tracking-widest text-sm">End Session</span>
             </button>
           )}
 
