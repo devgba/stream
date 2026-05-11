@@ -5,7 +5,6 @@
 
 import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { 
-  Settings, 
   Activity, 
   Radio, 
   WifiOff, 
@@ -106,7 +105,6 @@ export default function App() {
   const [stats, setStats] = useState<NetworkStats>({ bitrate: 0, packetLoss: 0, latency: 0, fps: 0 });
   const [isHealthy, setIsHealthy] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [showSettings, setShowSettings] = useState(false);
   const [facingMode, setFacingMode] = useState<'user' | 'environment'>('environment'); // Default ke belakang
   
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -325,207 +323,186 @@ export default function App() {
   }, [stopStreaming]);
 
   return (
-    <div className="min-h-screen bg-[#151619] text-white font-sans selection:bg-orange-500/30 overflow-hidden flex flex-col">
-      {/* --- UI Header --- */}
-      <header className="p-4 border-b border-white/5 flex items-center justify-between bg-[#1a1b1e] z-20">
-        <div className="flex items-center gap-2">
-          <div className={`w-2.5 h-2.5 rounded-full ${isStreaming ? (isHealthy ? 'bg-red-500 animate-pulse' : 'bg-orange-500 animate-bounce') : 'bg-white/20'}`} />
-          <h1 className="text-[10px] font-mono uppercase tracking-[0.2em] font-bold text-white/50">
-            {isStreaming ? (isHealthy ? 'Live Broadcast' : 'Connection Unstable') : 'System Idle'}
-          </h1>
-        </div>
-        
-        <div className="flex gap-2">
-          <button 
-            onClick={toggleCamera}
-            className="p-2.5 bg-white/5 hover:bg-white/10 rounded-xl transition-all active:scale-90"
-            title="Switch Camera"
-          >
-            <SwitchCamera size={18} className="text-white/70" />
-          </button>
-          <button 
-            onClick={() => setShowSettings(!showSettings)}
-            className="p-2.5 bg-white/5 hover:bg-white/10 rounded-xl transition-all"
-          >
-            <Settings size={18} className={showSettings ? 'text-orange-500' : 'text-white/40'} />
-          </button>
-        </div>
-      </header>
+    <div className="min-h-screen bg-[#f3f4f6] text-[#111214] font-sans selection:bg-blue-500/20">
+      <main className="w-full px-4 py-5 sm:px-6 lg:px-8 lg:py-8">
+        <section className="mx-auto flex min-h-[calc(100vh-2.5rem)] w-full max-w-7xl flex-col gap-5 rounded-[8px] bg-[#d9d9d9] p-5 shadow-sm sm:p-8 lg:min-h-[calc(100vh-5rem)] lg:p-12">
+          <header className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+            <div>
+              <h1 className="text-4xl font-normal tracking-normal text-black sm:text-5xl">
+                Cloudflare WHIP Streamer
+              </h1>
+              <div className="mt-3 flex items-center gap-2">
+                <div className={`h-2.5 w-2.5 rounded-full ${isStreaming ? (isHealthy ? 'bg-red-500 animate-pulse' : 'bg-orange-500 animate-bounce') : 'bg-black/20'}`} />
+                <p className="text-xs font-semibold uppercase tracking-[0.18em] text-black/45">
+                  {isStreaming ? (isHealthy ? 'Live Broadcast' : 'Connection Unstable') : 'System Idle'}
+                </p>
+              </div>
+            </div>
 
-      {/* --- Viewport --- */}
-      <main className="flex-1 relative bg-black flex items-center justify-center overflow-hidden">
-        <video 
-          ref={videoRef}
-          autoPlay 
-          playsInline 
-          muted 
-          className="w-full h-full object-cover"
-          id="preview-video"
-        />
+            <div className="flex gap-2 self-start sm:self-auto">
+              <button
+                onClick={toggleCamera}
+                className="flex h-11 w-11 items-center justify-center rounded-[6px] bg-white/70 text-black/65 shadow-sm transition-all hover:bg-white active:scale-95"
+                title="Switch Camera"
+              >
+                <SwitchCamera size={19} />
+              </button>
+              <button
+                onClick={() => window.location.reload()}
+                className="flex h-11 w-11 items-center justify-center rounded-[6px] bg-white/70 text-black/65 shadow-sm transition-all hover:bg-white active:scale-95"
+                title="Reload"
+              >
+                <RefreshCw size={19} />
+              </button>
+            </div>
+          </header>
 
-        {/* --- Network Alert --- */}
-        <AnimatePresence>
-          {!isHealthy && isStreaming && (
-            <motion.div 
-               initial={{ opacity: 0, scale: 0.9 }}
-               animate={{ opacity: 1, scale: 1 }}
-               exit={{ opacity: 0 }}
-               className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 bg-black/80 backdrop-blur-xl border border-orange-500/50 p-6 rounded-3xl flex flex-col items-center gap-3 z-30 pointer-events-none"
-            >
-              <WifiOff size={32} className="text-orange-500" />
-              <p className="text-sm font-bold uppercase tracking-widest text-orange-200">Poor Connection</p>
-              <p className="text-[10px] text-white/40 text-center max-w-[200px]">Check your 4G signal. Video may be lagging or frozen at 0 kbps.</p>
-            </motion.div>
-          )}
-        </AnimatePresence>
+          <div className="grid flex-1 items-center gap-8 lg:grid-cols-[minmax(0,1fr)_minmax(320px,430px)] xl:gap-12">
+            <section className="relative overflow-hidden bg-black shadow-sm">
+              <div className="aspect-video w-full">
+                <video
+                  ref={videoRef}
+                  autoPlay
+                  playsInline
+                  muted
+                  className="h-full w-full object-cover"
+                  id="preview-video"
+                />
+              </div>
 
-        {/* --- Stats HUD --- */}
-        <AnimatePresence>
-          {isStreaming && (
-            <motion.div 
-              initial={{ opacity: 0, x: -20 }}
-              animate={{ opacity: 1, x: 0 }}
-              className="absolute top-4 left-4 z-10"
-            >
-              <div className="bg-black/40 backdrop-blur-md border border-white/10 p-3 rounded-2xl flex flex-col gap-2.5 min-w-[150px]">
-                <div className="flex items-center justify-between gap-6">
-                  <div className="flex items-center gap-2 opacity-50">
-                    <Radio size={12} className="text-blue-400" />
-                    <span className="text-[10px] font-mono uppercase">Bitrate</span>
+              <AnimatePresence>
+                {!isHealthy && isStreaming && (
+                  <motion.div
+                    initial={{ opacity: 0, scale: 0.94 }}
+                    animate={{ opacity: 1, scale: 1 }}
+                    exit={{ opacity: 0 }}
+                    className="pointer-events-none absolute inset-0 z-30 flex items-center justify-center bg-black/35 p-6"
+                  >
+                    <div className="flex max-w-[260px] flex-col items-center gap-3 rounded-[8px] border border-orange-400/50 bg-black/85 p-5 text-center text-white shadow-2xl backdrop-blur-xl">
+                      <WifiOff size={32} className="text-orange-400" />
+                      <p className="text-sm font-bold uppercase tracking-widest text-orange-100">Poor Connection</p>
+                      <p className="text-xs leading-relaxed text-white/55">Check your 4G signal. Video may be lagging or frozen at 0 kbps.</p>
+                    </div>
+                  </motion.div>
+                )}
+              </AnimatePresence>
+
+              <AnimatePresence>
+                {error && (
+                  <motion.div
+                    initial={{ opacity: 0, y: 16 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    exit={{ opacity: 0, y: 16 }}
+                    className="absolute bottom-4 left-4 right-4 z-40 rounded-[8px] border border-white/20 bg-red-600 p-4 text-white shadow-2xl"
+                  >
+                    <div className="flex items-center gap-3">
+                      <AlertCircle size={20} />
+                      <p className="text-sm font-bold uppercase tracking-tight">Broadcast Failed</p>
+                    </div>
+                    <p className="mt-2 text-xs leading-relaxed opacity-85">{error}</p>
+                    <button onClick={() => setError(null)} className="mt-3 w-full rounded-[6px] bg-black/20 py-2 text-xs font-bold uppercase hover:bg-black/30">
+                      Tutup Notifikasi
+                    </button>
+                  </motion.div>
+                )}
+              </AnimatePresence>
+            </section>
+
+            <aside className="flex h-full min-h-[320px] flex-col justify-center gap-5 lg:py-8">
+              <div className="grid grid-cols-3 gap-3">
+                <div className="rounded-[6px] bg-white/75 p-4 shadow-sm">
+                  <div className="mb-3 flex items-center gap-2 text-black/45">
+                    <Radio size={15} className="text-blue-600" />
+                    <span className="text-[11px] font-bold uppercase tracking-[0.16em]">Bitrate</span>
                   </div>
-                  <span className={`text-xs font-mono font-bold ${stats.bitrate < 100 ? 'text-red-500 animate-pulse' : 'text-green-400'}`}>
-                    {stats.bitrate} <span className="text-[8px] opacity-40">kbps</span>
-                  </span>
+                  <p className={`font-mono text-2xl font-bold leading-none ${isStreaming && stats.bitrate < 100 ? 'text-red-600' : 'text-black'}`}>
+                    {stats.bitrate}
+                    <span className="ml-1 text-xs font-semibold text-black/35">kbps</span>
+                  </p>
                 </div>
 
-                <div className="flex items-center justify-between gap-6">
-                  <div className="flex items-center gap-2 opacity-50">
-                    <Video size={12} />
-                    <span className="text-[10px] font-mono uppercase">FPS</span>
+                <div className="rounded-[6px] bg-white/75 p-4 shadow-sm">
+                  <div className="mb-3 flex items-center gap-2 text-black/45">
+                    <Video size={15} className="text-emerald-600" />
+                    <span className="text-[11px] font-bold uppercase tracking-[0.16em]">FPS</span>
                   </div>
-                  <span className="text-xs font-mono font-bold">
+                  <p className="font-mono text-2xl font-bold leading-none text-black">
                     {stats.fps}
-                  </span>
+                  </p>
                 </div>
 
-                <div className="flex items-center justify-between gap-6">
-                  <div className="flex items-center gap-2 opacity-50">
-                    <Activity size={12} className="text-purple-400" />
-                    <span className="text-[10px] font-mono uppercase">RTT</span>
+                <div className="rounded-[6px] bg-white/75 p-4 shadow-sm">
+                  <div className="mb-3 flex items-center gap-2 text-black/45">
+                    <Activity size={15} className="text-violet-600" />
+                    <span className="text-[11px] font-bold uppercase tracking-[0.16em]">RTT</span>
                   </div>
-                  <span className="text-xs font-mono font-bold text-white/80">
-                    {stats.latency}<span className="text-[8px] opacity-20">ms</span>
-                  </span>
+                  <p className="font-mono text-2xl font-bold leading-none text-black">
+                    {stats.latency}
+                    <span className="ml-1 text-xs font-semibold text-black/35">ms</span>
+                  </p>
                 </div>
               </div>
-            </motion.div>
-          )}
-        </AnimatePresence>
 
-        {/* --- Error Overlay --- */}
-        <AnimatePresence>
-          {error && (
-            <motion.div 
-              initial={{ opacity: 0, y: 20 }}
-              animate={{ opacity: 1, y: 0 }}
-              exit={{ opacity: 0, y: 20 }}
-              className="absolute bottom-28 left-4 right-4 bg-red-600 p-4 rounded-2xl flex flex-col gap-2 shadow-2xl z-50 border border-white/20"
-            >
-              <div className="flex items-center gap-3">
-                <AlertCircle size={20} />
-                <p className="text-sm font-bold uppercase tracking-tight">Broadcast Failed</p>
+              <div className="space-y-5 rounded-[6px] bg-white/75 p-5 shadow-sm">
+                <div className="space-y-2">
+                  <label className="text-[11px] font-bold uppercase tracking-[0.16em] text-black/45">WHIP Publish URL</label>
+                  <input
+                    type="text"
+                    value={streamUrl}
+                    onChange={(e) => setStreamUrl(e.target.value)}
+                    placeholder="https://.../webRTC/publish"
+                    className="w-full rounded-[6px] border border-black/10 bg-white px-4 py-3 font-mono text-sm text-black outline-none transition-all placeholder:text-black/25 focus:border-blue-500"
+                  />
+                </div>
+
+                <div className="space-y-3">
+                  <div className="flex items-center justify-between gap-4">
+                    <label className="text-[11px] font-bold uppercase tracking-[0.16em] text-black/45">Max Bitrate</label>
+                    <span className="font-mono text-sm font-bold text-blue-600">{bitrateLimit} <span className="text-xs text-black/35">kbps</span></span>
+                  </div>
+                  <input
+                    type="range"
+                    min="300"
+                    max="5000"
+                    step="100"
+                    value={bitrateLimit}
+                    onChange={(e) => setBitrateLimit(parseInt(e.target.value))}
+                    className="h-2 w-full cursor-pointer appearance-none rounded-full bg-black/10 accent-blue-600"
+                  />
+                </div>
+
+                <div className="flex items-center gap-3 rounded-[6px] border border-blue-500/15 bg-blue-500/5 p-4 text-black/65">
+                  <Video size={18} className="shrink-0 text-blue-600" />
+                  <p className="text-xs leading-relaxed">
+                    <span className="font-bold uppercase tracking-[0.12em] text-blue-700">Fixed Resolution</span>
+                    <br />
+                    <span className="font-mono">360p @ 30fps | Cloudflare-compatible codecs</span>
+                  </p>
+                </div>
               </div>
-              <p className="text-xs opacity-80 leading-relaxed font-mono">{error}</p>
-              <button onClick={() => setError(null)} className="mt-2 w-full py-2 bg-black/20 rounded-lg text-[10px] uppercase font-bold hover:bg-black/30">Tutup Notifikasi</button>
-            </motion.div>
-          )}
-        </AnimatePresence>
+
+              {!isStreaming ? (
+                <button
+                  onClick={() => startStreaming()}
+                  disabled={!streamUrl}
+                  className="flex h-20 w-full items-center justify-center gap-4 rounded-none bg-[#438bd3] text-4xl font-normal uppercase tracking-normal text-white shadow-sm transition-all hover:bg-[#347fcb] active:scale-[0.99] disabled:bg-black/10 disabled:text-black/20 sm:h-24 sm:text-5xl"
+                >
+                  <Play size={30} fill="currentColor" />
+                  <span>Stream</span>
+                </button>
+              ) : (
+                <button
+                  onClick={stopStreaming}
+                  className="flex h-20 w-full items-center justify-center gap-4 rounded-none bg-[#111214] text-3xl font-normal uppercase tracking-normal text-white shadow-sm transition-all hover:bg-black active:scale-[0.99] sm:h-24 sm:text-4xl"
+                >
+                  <Square size={28} fill="currentColor" />
+                  <span>End Stream</span>
+                </button>
+              )}
+            </aside>
+          </div>
+        </section>
       </main>
-
-      {/* --- Footer Controls --- */}
-      <footer className="bg-[#1a1b1e] p-6 pb-10 border-t border-white/5 space-y-6 z-20">
-        
-        <AnimatePresence>
-          {showSettings && (
-            <motion.div 
-              initial={{ height: 0, opacity: 0 }}
-              animate={{ height: 'auto', opacity: 1 }}
-              exit={{ height: 0, opacity: 0 }}
-              className="overflow-hidden space-y-5"
-            >
-              <div className="space-y-4">
-                 <div className="space-y-2">
-                   <label className="text-[10px] font-mono uppercase text-white/30 tracking-widest pl-1">WHIP Publish URL</label>
-                   <input 
-                     type="text" 
-                     value={streamUrl}
-                     onChange={(e) => setStreamUrl(e.target.value)}
-                     placeholder="https://.../webRTC/publish"
-                     className="w-full bg-black/60 border border-white/5 p-4 rounded-2xl text-sm font-mono placeholder:text-white/10 focus:border-orange-500/40 outline-none transition-all shadow-inner"
-                   />
-                 </div>
-
-                 <div className="space-y-4">
-                   <div className="flex justify-between items-center px-1">
-                      <label className="text-[10px] font-mono uppercase text-white/30 tracking-widest">Max Bitrate</label>
-                      <span className="text-sm font-mono font-bold text-orange-500">{bitrateLimit} <span className="text-[10px] opacity-40">kbps</span></span>
-                   </div>
-                   <div className="px-1">
-                    <input 
-                      type="range" 
-                      min="300" 
-                      max="5000" 
-                      step="100"
-                      value={bitrateLimit}
-                      onChange={(e) => setBitrateLimit(parseInt(e.target.value))}
-                      className="w-full accent-orange-500 bg-white/5 h-2 rounded-full appearance-none cursor-pointer"
-                    />
-                   </div>
-                 </div>
-
-                 <div className="flex items-center gap-4 bg-orange-500/5 p-4 rounded-2xl border border-orange-500/10">
-                    <div className="w-10 h-10 bg-orange-500/10 rounded-xl flex items-center justify-center text-orange-500">
-                      <Video size={18} />
-                    </div>
-                    <div>
-                      <p className="text-[10px] font-bold uppercase text-orange-400">Fixed Resolution</p>
-                      <p className="text-[11px] font-mono text-white/40 tracking-tight text-white/60">360p @ 30fps | Cloudflare-compatible codecs</p>
-                    </div>
-                 </div>
-              </div>
-              <div className="h-px bg-white/5 w-full" />
-            </motion.div>
-          )}
-        </AnimatePresence>
-
-        <div className="flex items-center gap-4">
-          {!isStreaming ? (
-            <button 
-              onClick={() => startStreaming()}
-              disabled={!streamUrl}
-              className="flex-1 bg-orange-500 hover:bg-orange-600 disabled:bg-white/5 disabled:text-white/10 text-black font-black h-16 rounded-3xl flex items-center justify-center gap-4 transition-all active:scale-95 group shadow-2xl shadow-orange-500/20"
-            >
-              <Play size={22} fill="currentColor" />
-              <span className="uppercase tracking-widest text-sm">Start Streaming</span>
-            </button>
-          ) : (
-            <button 
-              onClick={stopStreaming}
-              className="flex-1 bg-white text-black font-black h-16 rounded-3xl flex items-center justify-center gap-4 transition-all active:scale-95 group shadow-2xl"
-            >
-              <Square size={22} fill="currentColor" />
-              <span className="uppercase tracking-widest text-sm">End Session</span>
-            </button>
-          )}
-
-          <button 
-             onClick={() => window.location.reload()}
-             className="w-16 h-16 bg-white/5 border border-white/5 rounded-3xl flex items-center justify-center hover:bg-white/10 transition-all active:scale-90"
-          >
-            <RefreshCw size={22} className="text-white/30" />
-          </button>
-        </div>
-      </footer>
     </div>
   );
 }
